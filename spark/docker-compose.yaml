@@ -1,0 +1,155 @@
+# Compose file for running a local Spark Standalone cluster
+# (Master + Workers + History Server)
+
+version: '3.8'
+
+services:
+
+  # ----------------------------
+  # Spark Master
+  # ----------------------------
+  spark-master:
+    # Fixed container name for easy docker exec / debugging
+    container_name: da-spark-master
+
+    # Build the Spark image from the Dockerfile in this directory
+    build: .
+
+    # Image name reused by master, workers, and history server
+    image: da-spark-image
+
+    # Start this container as a Spark Master
+    entrypoint: ['./entrypoint.sh', 'master']
+
+    # Healthcheck verifies that Spark Master UI is reachable
+    # Spark Master UI runs on port 8080 inside the container
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8080" ]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+    # Volume mounts
+    volumes:
+      # Input/output data for Spark jobs
+      - ./data:/opt/spark/data
+
+      # PySpark applications submitted with spark-submit
+      - ./spark_apps:/opt/spark/apps
+
+      # Shared event logs used by the History Server
+      - spark-logs:/opt/spark/spark-events
+
+    # Environment variables shared across Spark components
+    env_file:
+      - .env.spark
+
+    # Expose Spark Master ports to the host
+    ports:
+      # Spark Master Web UI
+      - '9090:8080'
+
+      # Spark cluster communication port
+      - '7077:7077'
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+
+  # ----------------------------
+  # Spark History Server
+  # ----------------------------
+  spark-history-server:
+    # Fixed container name
+    container_name: da-spark-history
+
+    # Reuse the same Spark image
+    image: da-spark-image
+
+    # Start this container as a History Server
+    entrypoint: ['./entrypoint.sh', 'history']
+
+    # Start only after Spark Master is up
+    depends_on:
+      - spark-master
+
+    # Same Spark environment variables
+    env_file:
+      - .env.spark
+
+    # Only needs access to Spark event logs
+    volumes:
+      - spark-logs:/opt/spark/spark-events
+
+    # Expose History Server UI
+    ports:
+      - '18080:18080'
+
+
+  # ----------------------------
+  # Spark Worker(s)
+  # ----------------------------
+  spark-worker:
+    # No fixed container name so Docker Compose can scale workers
+    # Example: docker compose up --scale spark-worker=3
+
+    # Reuse the same Spark image
+    image: da-spark-image
+
+    # Start this container as a Spark Worker
+    entrypoint: ['./entrypoint.sh', 'worker']
+
+    # Workers must connect to the Master
+    depends_on:
+      - spark-master
+
+    # Same Spark environment variables
+    env_file:
+      - .env.spark
+
+    # Volume mounts (same as master)
+    volumes:
+      # Access to input/output data
+      - ./data:/opt/spark/data
+
+      # Access to Spark application code
+      - ./spark_apps:/opt/spark/apps
+
+      # Write Spark execution event logs
+      - spark-logs:/opt/spark/spark-events
+
+  jupyter:
+    image: da-spark-image
+
+    container_name: da-spark-jupyter
+
+    entrypoint: ["jupyter", "lab"]
+
+    command:
+      - "--ip=0.0.0.0"
+      - "--port=8888"
+      - "--no-browser"
+      - "--allow-root"
+      # This tells Jupyter not to require a login token.
+      - "--ServerApp.token="
+
+    depends_on:
+      - spark-master
+
+    volumes:
+      - ./spark_apps:/opt/spark/apps
+      - ./data:/opt/spark/data
+      - spark-logs:/opt/spark/spark-events
+
+    ports:
+      - "8888:8888"
+
+    environment:
+      - SPARK_MASTER_URL=spark://spark-master:7077
+# ----------------------------
+# Named volumes
+# ----------------------------
+volumes:
+  # Persistent Spark event logs shared across containers
+  spark-logs:
